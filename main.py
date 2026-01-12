@@ -23,7 +23,7 @@ TWILIO_WHATSAPP_FROM = os.environ.get('TWILIO_WHATSAPP_FROM', 'whatsapp:+1415523
 WHATSAPP_RECIPIENTS = os.environ.get('WHATSAPP_RECIPIENTS', 'whatsapp:+56912345678').split(',')
 
 # Divisas a monitorear (relacionadas con tus instrumentos)
-CURRENCIES_TO_MONITOR = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD', 'NZD']
+CURRENCIES_TO_MONITOR = ['USD']
 
 # Minutos antes del evento para alertar
 ALERT_MINUTES_BEFORE = 30
