@@ -1,29 +1,32 @@
 """
-Economic Calendar Alert System
-Consulta eventos de alta importancia y envía alertas por WhatsApp via Twilio
+Economic Calendar Alert System v2
+Usa Finnhub API (gratuita y confiable) para obtener eventos económicos
+Notifica ANTES y DESPUÉS del evento con resultados
 """
 
 import requests
-from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import pytz
 import os
 import json
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CONFIGURACIÓN - Editar estos valores
+# CONFIGURACIÓN
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Twilio (obtener de https://console.twilio.com)
+# Finnhub API (obtener gratis en https://finnhub.io/register)
+FINNHUB_API_KEY = os.environ.get('FINNHUB_API_KEY', 'tu_finnhub_api_key')
+
+# Twilio
 TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', 'tu_account_sid')
 TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', 'tu_auth_token')
-TWILIO_WHATSAPP_FROM = os.environ.get('TWILIO_WHATSAPP_FROM', 'whatsapp:+14155238886')  # Número Twilio Sandbox
+TWILIO_WHATSAPP_FROM = os.environ.get('TWILIO_WHATSAPP_FROM', 'whatsapp:+14155238886')
 
-# Números de WhatsApp destino (incluir código país)
+# Números destino (separados por coma)
 WHATSAPP_RECIPIENTS = os.environ.get('WHATSAPP_RECIPIENTS', 'whatsapp:+56912345678').split(',')
 
-# Divisas a monitorear (relacionadas con tus instrumentos)
-CURRENCIES_TO_MONITOR = ['USD']
+# Países/divisas a monitorear
+COUNTRIES_TO_MONITOR = ['US', 'EU', 'GB', 'JP', 'AU', 'CA', 'CH', 'NZ']
 
 # Minutos antes del evento para alertar
 ALERT_MINUTES_BEFORE = 30
@@ -31,214 +34,139 @@ ALERT_MINUTES_BEFORE = 30
 # Timezone
 TIMEZONE = 'America/Santiago'
 
-# ═══════════════════════════════════════════════════════════════════════════
-# SCRAPER DE FOREX FACTORY
-# ═══════════════════════════════════════════════════════════════════════════
-
-def get_forex_factory_events():
-    """Obtiene eventos de alta importancia de Forex Factory"""
-    
-    url = "https://www.forexfactory.com/calendar"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=30)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        events = []
-        current_date = None
-        
-        # Buscar filas del calendario
-        rows = soup.select('tr.calendar__row')
-        
-        for row in rows:
-            # Obtener fecha si existe en esta fila
-            date_cell = row.select_one('td.calendar__date')
-            if date_cell and date_cell.get_text(strip=True):
-                date_text = date_cell.get_text(strip=True)
-                current_date = parse_ff_date(date_text)
-            
-            # Verificar si es evento de alto impacto
-            impact = row.select_one('td.calendar__impact span')
-            if not impact:
-                continue
-                
-            impact_class = impact.get('class', [])
-            is_high_impact = any('high' in c.lower() for c in impact_class)
-            
-            if not is_high_impact:
-                continue
-            
-            # Obtener divisa
-            currency_cell = row.select_one('td.calendar__currency')
-            currency = currency_cell.get_text(strip=True) if currency_cell else ''
-            
-            if currency not in CURRENCIES_TO_MONITOR:
-                continue
-            
-            # Obtener hora
-            time_cell = row.select_one('td.calendar__time')
-            time_text = time_cell.get_text(strip=True) if time_cell else ''
-            
-            # Obtener nombre del evento
-            event_cell = row.select_one('td.calendar__event')
-            event_name = event_cell.get_text(strip=True) if event_cell else ''
-            
-            # Obtener forecast y previous
-            forecast_cell = row.select_one('td.calendar__forecast')
-            forecast = forecast_cell.get_text(strip=True) if forecast_cell else ''
-            
-            previous_cell = row.select_one('td.calendar__previous')
-            previous = previous_cell.get_text(strip=True) if previous_cell else ''
-            
-            if current_date and time_text and event_name:
-                event_datetime = parse_ff_datetime(current_date, time_text)
-                if event_datetime:
-                    events.append({
-                        'datetime': event_datetime,
-                        'currency': currency,
-                        'event': event_name,
-                        'impact': 'HIGH',
-                        'forecast': forecast,
-                        'previous': previous
-                    })
-        
-        return events
-        
-    except Exception as e:
-        print(f"Error obteniendo calendario: {e}")
-        return []
-
-
-def parse_ff_date(date_text):
-    """Parsea fecha de Forex Factory (ej: 'Mon Jan 13')"""
-    try:
-        current_year = datetime.now().year
-        # Agregar año actual
-        date_with_year = f"{date_text} {current_year}"
-        return datetime.strptime(date_with_year, "%a %b %d %Y").date()
-    except:
-        return None
-
-
-def parse_ff_datetime(date_obj, time_text):
-    """Combina fecha y hora de Forex Factory"""
-    try:
-        if not time_text or time_text in ['', 'All Day', 'Tentative']:
-            return None
-        
-        # Limpiar tiempo (puede ser "8:30am" o "8:30pm")
-        time_text = time_text.lower().strip()
-        
-        # Parsear hora (Forex Factory usa ET)
-        if 'am' in time_text or 'pm' in time_text:
-            time_obj = datetime.strptime(time_text, "%I:%M%p").time()
-        else:
-            time_obj = datetime.strptime(time_text, "%H:%M").time()
-        
-        # Combinar fecha y hora
-        dt = datetime.combine(date_obj, time_obj)
-        
-        # Forex Factory usa Eastern Time
-        et_tz = pytz.timezone('America/New_York')
-        dt_et = et_tz.localize(dt)
-        
-        # Convertir a UTC para comparaciones
-        return dt_et.astimezone(pytz.UTC)
-        
-    except Exception as e:
-        print(f"Error parseando hora '{time_text}': {e}")
-        return None
-
+# Archivo para trackear eventos notificados
+NOTIFIED_FILE = '/tmp/notified_events.json'
+RESULTS_FILE = '/tmp/pending_results.json'
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ALTERNATIVA: INVESTING.COM API (más confiable)
+# FINNHUB API
 # ═══════════════════════════════════════════════════════════════════════════
 
-def get_investing_events():
-    """Obtiene eventos de Investing.com via su API interna"""
+def get_finnhub_events():
+    """Obtiene eventos económicos de Finnhub API"""
     
     today = datetime.now().strftime('%Y-%m-%d')
     tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     
-    url = "https://www.investing.com/economic-calendar/Service/getCalendarFilteredData"
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Content-Type': 'application/x-www-form-urlencoded',
-    }
-    
-    # Filtrar por países principales
-    country_ids = {
-        'USD': 5,    # Estados Unidos
-        'EUR': 72,   # Eurozona
-        'GBP': 4,    # Reino Unido
-        'JPY': 35,   # Japón
-        'CHF': 12,   # Suiza
-        'AUD': 25,   # Australia
-        'CAD': 6,    # Canadá
-        'NZD': 43,   # Nueva Zelanda
-    }
-    
-    data = {
-        'dateFrom': today,
-        'dateTo': tomorrow,
-        'country[]': [str(v) for v in country_ids.values()],
-        'importance[]': ['3'],  # Solo alta importancia
-        'timeZone': '8',  # UTC
-        'timeFilter': 'timeRemain',
-        'currentTab': 'custom',
-        'limit_from': '0'
+    url = "https://finnhub.io/api/v1/calendar/economic"
+    params = {
+        'from': today,
+        'to': tomorrow,
+        'token': FINNHUB_API_KEY
     }
     
     try:
-        response = requests.post(url, headers=headers, data=data, timeout=30)
-        result = response.json()
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
         
         events = []
-        if 'data' in result:
-            soup = BeautifulSoup(result['data'], 'html.parser')
-            rows = soup.select('tr.js-event-item')
+        for item in data.get('economicCalendar', []):
+            # Filtrar solo alto impacto y países monitoreados
+            impact = item.get('impact', '').lower()
+            country = item.get('country', '')
             
-            for row in rows:
-                # Solo eventos de 3 toros (alta importancia)
-                bulls = row.select('td.sentiment i.grayFullBullishIcon')
-                if len(bulls) < 3:
-                    continue
-                
-                # Obtener datos
-                time_attr = row.get('data-event-datetime', '')
-                currency = row.select_one('td.flagCur')
-                event_name = row.select_one('td.event')
-                
-                if time_attr and currency and event_name:
-                    dt = datetime.strptime(time_attr, '%Y/%m/%d %H:%M:%S')
-                    dt = pytz.UTC.localize(dt)
-                    
-                    events.append({
-                        'datetime': dt,
-                        'currency': currency.get_text(strip=True),
-                        'event': event_name.get_text(strip=True),
-                        'impact': 'HIGH',
-                        'forecast': '',
-                        'previous': ''
-                    })
+            if impact != 'high':
+                continue
+            
+            if country not in COUNTRIES_TO_MONITOR:
+                continue
+            
+            # Parsear fecha/hora
+            event_time = item.get('time', '')
+            if not event_time:
+                continue
+            
+            try:
+                # Finnhub usa formato ISO
+                dt = datetime.fromisoformat(event_time.replace('Z', '+00:00'))
+                dt_utc = dt.astimezone(pytz.UTC)
+            except:
+                continue
+            
+            events.append({
+                'id': item.get('id', ''),
+                'datetime': dt_utc,
+                'country': country,
+                'event': item.get('event', ''),
+                'impact': 'HIGH',
+                'estimate': item.get('estimate'),
+                'prev': item.get('prev'),
+                'actual': item.get('actual'),
+                'unit': item.get('unit', '')
+            })
         
         return events
         
     except Exception as e:
-        print(f"Error obteniendo Investing.com: {e}")
+        print(f"Error Finnhub: {e}")
         return []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ENVÍO DE WHATSAPP VIA TWILIO
+# ALTERNATIVA: FCS API (gratuita)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_fcsapi_events():
+    """Alternativa usando FCS API (gratuita, requiere registro)"""
+    
+    # FCS API key (obtener en https://fcsapi.com/)
+    FCS_API_KEY = os.environ.get('FCS_API_KEY', '')
+    
+    if not FCS_API_KEY:
+        return []
+    
+    url = "https://fcsapi.com/api-v3/forex/economy_cal"
+    params = {
+        'access_key': FCS_API_KEY
+    }
+    
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        data = response.json()
+        
+        events = []
+        for item in data.get('response', []):
+            if item.get('impact', '').lower() != 'high':
+                continue
+            
+            country = item.get('country', '')
+            if country not in COUNTRIES_TO_MONITOR:
+                continue
+            
+            # Parsear fecha/hora
+            date_str = item.get('date', '')
+            time_str = item.get('time', '')
+            
+            if date_str and time_str:
+                try:
+                    dt_str = f"{date_str} {time_str}"
+                    dt = datetime.strptime(dt_str, '%Y-%m-%d %H:%M:%S')
+                    dt_utc = pytz.UTC.localize(dt)
+                    
+                    events.append({
+                        'id': item.get('id', ''),
+                        'datetime': dt_utc,
+                        'country': country,
+                        'event': item.get('title', ''),
+                        'impact': 'HIGH',
+                        'estimate': item.get('forecast'),
+                        'prev': item.get('previous'),
+                        'actual': item.get('actual'),
+                        'unit': ''
+                    })
+                except:
+                    continue
+        
+        return events
+        
+    except Exception as e:
+        print(f"Error FCS API: {e}")
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WHATSAPP VIA TWILIO
 # ═══════════════════════════════════════════════════════════════════════════
 
 def send_whatsapp(message):
@@ -272,116 +200,254 @@ def send_whatsapp(message):
             print(f"✗ Excepción enviando a {recipient}: {e}")
 
 
-def format_event_message(event):
-    """Formatea el mensaje del evento"""
+def format_pre_event_message(event):
+    """Formatea mensaje PRE-evento"""
     
     local_tz = pytz.timezone(TIMEZONE)
     local_time = event['datetime'].astimezone(local_tz)
     
+    # Mapeo de países a banderas
+    flags = {
+        'US': '🇺🇸', 'EU': '🇪🇺', 'GB': '🇬🇧', 'JP': '🇯🇵',
+        'AU': '🇦🇺', 'CA': '🇨🇦', 'CH': '🇨🇭', 'NZ': '🇳🇿'
+    }
+    flag = flags.get(event['country'], '🌍')
+    
     message = f"""
-🔴 *EVENTO ALTO IMPACTO*
+🔴 *EVENTO PRÓXIMO* {flag}
 
 📅 {local_time.strftime('%d/%m/%Y')}
 ⏰ {local_time.strftime('%H:%M')} (Chile)
-💱 {event['currency']}
+🏛️ {event['country']}
 📊 {event['event']}
 
-⚠️ Considerar cerrar/reducir posiciones
+📈 Pronóstico: {event.get('estimate') or 'N/A'}
+📉 Anterior: {event.get('prev') or 'N/A'}
+
+⚠️ Considerar gestionar posiciones
 """
-    
-    if event.get('forecast'):
-        message += f"\n📈 Forecast: {event['forecast']}"
-    if event.get('previous'):
-        message += f"\n📉 Previous: {event['previous']}"
-    
     return message.strip()
+
+
+def format_post_event_message(event):
+    """Formatea mensaje POST-evento con resultados"""
+    
+    local_tz = pytz.timezone(TIMEZONE)
+    local_time = event['datetime'].astimezone(local_tz)
+    
+    flags = {
+        'US': '🇺🇸', 'EU': '🇪🇺', 'GB': '🇬🇧', 'JP': '🇯🇵',
+        'AU': '🇦🇺', 'CA': '🇨🇦', 'CH': '🇨🇭', 'NZ': '🇳🇿'
+    }
+    flag = flags.get(event['country'], '🌍')
+    
+    actual = event.get('actual')
+    estimate = event.get('estimate')
+    prev = event.get('prev')
+    
+    # Determinar si fue mejor o peor de lo esperado
+    sentiment = ""
+    if actual is not None and estimate is not None:
+        try:
+            actual_val = float(str(actual).replace('%', '').replace(',', '').replace('K', '000').replace('M', '000000'))
+            estimate_val = float(str(estimate).replace('%', '').replace(',', '').replace('K', '000').replace('M', '000000'))
+            if actual_val > estimate_val:
+                sentiment = "📈 *MEJOR* de lo esperado"
+            elif actual_val < estimate_val:
+                sentiment = "📉 *PEOR* de lo esperado"
+            else:
+                sentiment = "➡️ *IGUAL* a lo esperado"
+        except:
+            sentiment = ""
+    
+    message = f"""
+✅ *RESULTADO PUBLICADO* {flag}
+
+📊 {event['event']}
+⏰ {local_time.strftime('%H:%M')} (Chile)
+
+🎯 *Actual: {actual or 'N/A'}*
+📈 Pronóstico: {estimate or 'N/A'}
+📉 Anterior: {prev or 'N/A'}
+
+{sentiment}
+"""
+    return message.strip()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GESTIÓN DE ESTADO
+# ═══════════════════════════════════════════════════════════════════════════
+
+def load_json_file(filepath):
+    """Carga archivo JSON"""
+    try:
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+            # Limpiar eventos viejos (más de 48 horas)
+            cutoff = (datetime.now() - timedelta(hours=48)).isoformat()
+            cleaned = {}
+            for k, v in data.items():
+                ts = v.get('timestamp', v) if isinstance(v, dict) else v
+                if ts > cutoff:
+                    cleaned[k] = v
+            return cleaned
+    except:
+        return {}
+
+
+def save_json_file(filepath, data):
+    """Guarda archivo JSON"""
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"Error guardando {filepath}: {e}")
+
+
+def get_event_id(event):
+    """Genera ID único para un evento"""
+    return f"{event['datetime'].isoformat()}_{event['country']}_{event['event'][:30]}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # LÓGICA PRINCIPAL
 # ═══════════════════════════════════════════════════════════════════════════
 
-def get_upcoming_events():
-    """Obtiene eventos próximos que requieren alerta"""
+def check_pre_events(events):
+    """Verifica y notifica eventos próximos"""
     
     now = datetime.now(pytz.UTC)
     alert_window_start = now
     alert_window_end = now + timedelta(minutes=ALERT_MINUTES_BEFORE + 5)
     
-    # Intentar Forex Factory primero, luego Investing.com
-    events = get_forex_factory_events()
-    if not events:
-        print("Forex Factory sin resultados, intentando Investing.com...")
-        events = get_investing_events()
+    notified = load_json_file(NOTIFIED_FILE)
+    pending_results = load_json_file(RESULTS_FILE)
     
-    # Filtrar eventos dentro de la ventana de alerta
-    upcoming = []
     for event in events:
-        if event['datetime'] and alert_window_start <= event['datetime'] <= alert_window_end:
-            upcoming.append(event)
+        event_id = get_event_id(event)
+        
+        # Verificar si el evento está en la ventana de alerta
+        if not (alert_window_start <= event['datetime'] <= alert_window_end):
+            continue
+        
+        # Verificar si ya fue notificado
+        if event_id in notified:
+            continue
+        
+        print(f"\n📢 Notificando evento próximo: {event['event']}")
+        message = format_pre_event_message(event)
+        send_whatsapp(message)
+        
+        # Marcar como notificado
+        notified[event_id] = {'timestamp': datetime.now().isoformat(), 'type': 'pre'}
+        
+        # Agregar a pendientes de resultado
+        pending_results[event_id] = {
+            'timestamp': datetime.now().isoformat(),
+            'event_time': event['datetime'].isoformat(),
+            'country': event['country'],
+            'event': event['event'],
+            'estimate': event.get('estimate'),
+            'prev': event.get('prev')
+        }
     
-    return upcoming
+    save_json_file(NOTIFIED_FILE, notified)
+    save_json_file(RESULTS_FILE, pending_results)
 
 
-# Archivo para trackear eventos ya notificados (evitar duplicados)
-NOTIFIED_FILE = '/tmp/notified_events.json'
-
-def load_notified_events():
-    """Carga eventos ya notificados"""
-    try:
-        with open(NOTIFIED_FILE, 'r') as f:
-            data = json.load(f)
-            # Limpiar eventos viejos (más de 24 horas)
-            cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
-            return {k: v for k, v in data.items() if v > cutoff}
-    except:
-        return {}
-
-
-def save_notified_event(event_id):
-    """Guarda evento como notificado"""
-    notified = load_notified_events()
-    notified[event_id] = datetime.now().isoformat()
-    with open(NOTIFIED_FILE, 'w') as f:
-        json.dump(notified, f)
-
-
-def get_event_id(event):
-    """Genera ID único para un evento"""
-    return f"{event['datetime'].isoformat()}_{event['currency']}_{event['event'][:20]}"
+def check_post_events(events):
+    """Verifica y notifica resultados de eventos pasados"""
+    
+    now = datetime.now(pytz.UTC)
+    pending_results = load_json_file(RESULTS_FILE)
+    notified = load_json_file(NOTIFIED_FILE)
+    
+    events_by_id = {}
+    for event in events:
+        event_id = get_event_id(event)
+        events_by_id[event_id] = event
+    
+    to_remove = []
+    
+    for event_id, pending in pending_results.items():
+        # Verificar si ya pasó el evento (al menos 5 minutos)
+        try:
+            event_time = datetime.fromisoformat(pending['event_time'])
+            if event_time.tzinfo is None:
+                event_time = pytz.UTC.localize(event_time)
+        except:
+            continue
+        
+        if now < event_time + timedelta(minutes=5):
+            continue  # Aún no ha pasado suficiente tiempo
+        
+        # Buscar el evento actualizado con resultados
+        if event_id in events_by_id:
+            event = events_by_id[event_id]
+            actual = event.get('actual')
+            
+            if actual is not None:
+                # Verificar si ya notificamos el resultado
+                result_key = f"{event_id}_result"
+                if result_key not in notified:
+                    print(f"\n📊 Notificando resultado: {event['event']} = {actual}")
+                    message = format_post_event_message(event)
+                    send_whatsapp(message)
+                    
+                    notified[result_key] = {'timestamp': datetime.now().isoformat(), 'type': 'post'}
+                    to_remove.append(event_id)
+        
+        # Si pasaron más de 2 horas sin resultado, eliminar de pendientes
+        if now > event_time + timedelta(hours=2):
+            to_remove.append(event_id)
+    
+    # Limpiar pendientes procesados
+    for event_id in to_remove:
+        if event_id in pending_results:
+            del pending_results[event_id]
+    
+    save_json_file(RESULTS_FILE, pending_results)
+    save_json_file(NOTIFIED_FILE, notified)
 
 
 def main():
     """Función principal"""
     
     print(f"\n{'='*50}")
-    print(f"Economic Calendar Alert - {datetime.now()}")
+    print(f"Economic Calendar Alert v2 - {datetime.now()}")
     print(f"{'='*50}\n")
     
-    # Obtener eventos próximos
-    events = get_upcoming_events()
+    # Obtener eventos (intentar Finnhub primero)
+    print("Consultando Finnhub API...")
+    events = get_finnhub_events()
     
     if not events:
-        print("No hay eventos de alto impacto próximos.")
+        print("Finnhub sin resultados, intentando FCS API...")
+        events = get_fcsapi_events()
+    
+    if not events:
+        print("No se pudieron obtener eventos de ninguna fuente.")
+        print("Verifica que FINNHUB_API_KEY esté configurado correctamente.")
         return
     
-    print(f"Encontrados {len(events)} eventos próximos de alto impacto")
+    print(f"Encontrados {len(events)} eventos de alto impacto")
     
-    # Cargar eventos ya notificados
-    notified = load_notified_events()
+    # Listar eventos del día
+    local_tz = pytz.timezone(TIMEZONE)
+    print("\nEventos de hoy:")
+    for e in sorted(events, key=lambda x: x['datetime']):
+        local_time = e['datetime'].astimezone(local_tz)
+        actual_str = f" | Actual: {e['actual']}" if e.get('actual') else ""
+        print(f"  {local_time.strftime('%H:%M')} - {e['country']} - {e['event']}{actual_str}")
     
-    # Enviar alertas para eventos no notificados
-    for event in events:
-        event_id = get_event_id(event)
-        
-        if event_id in notified:
-            print(f"Evento ya notificado: {event['event']}")
-            continue
-        
-        print(f"\nEnviando alerta: {event['event']}")
-        message = format_event_message(event)
-        send_whatsapp(message)
-        save_notified_event(event_id)
+    # Verificar eventos próximos (PRE)
+    print("\nVerificando eventos próximos...")
+    check_pre_events(events)
+    
+    # Verificar resultados pendientes (POST)
+    print("\nVerificando resultados pendientes...")
+    check_post_events(events)
     
     print("\n✓ Proceso completado")
 
