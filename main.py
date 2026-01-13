@@ -394,6 +394,22 @@ def main():
     print(f"Economic Calendar Alert v3 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*55}\n")
     
+    # Modo de prueba - envía un mensaje de test
+    test_mode = os.environ.get('TEST_MODE', '').lower() == 'true'
+    if test_mode:
+        print("🧪 MODO DE PRUEBA ACTIVADO")
+        print("Enviando mensaje de prueba...")
+        test_message = """🧪 *PRUEBA DE SISTEMA*
+
+✅ Economic Calendar Alert funcionando correctamente
+
+📅 Fecha: """ + datetime.now().strftime('%d/%m/%Y %H:%M') + """ (Chile)
+
+Este es un mensaje de prueba. Desactiva TEST_MODE para operación normal."""
+        send_whatsapp(test_message)
+        print("\n✓ Mensaje de prueba enviado. Desactiva TEST_MODE en Railway.")
+        return
+    
     # Obtener eventos
     events = get_ff_calendar_events()
     
