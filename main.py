@@ -78,11 +78,18 @@ def get_ff_calendar_events():
                 continue
             
             try:
-                # El calendario está en hora NY (Eastern Time)
-                et_tz = pytz.timezone('America/New_York')
-                dt_naive = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
-                dt_et = et_tz.localize(dt_naive)
-                dt_utc = dt_et.astimezone(pytz.UTC)
+                # El calendario puede venir en formato ISO con timezone
+                date_str = date_str.strip()
+                
+                # Intentar formato ISO primero (2026-01-13T08:30:00-05:00)
+                if 'T' in date_str:
+                    dt_utc = datetime.fromisoformat(date_str).astimezone(pytz.UTC)
+                else:
+                    # Formato alternativo: 2026-01-13 08:30:00 (Eastern Time)
+                    et_tz = pytz.timezone('America/New_York')
+                    dt_naive = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+                    dt_et = et_tz.localize(dt_naive)
+                    dt_utc = dt_et.astimezone(pytz.UTC)
                 
                 # Solo eventos de hoy y mañana
                 if not (today_start <= dt_utc <= tomorrow_end):
